@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IndoorNav - Smart Store Guide</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Tailwind for UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        #map { height: 100%; width: 100%; background: #ffffff; }
+        
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            border-radius: 12px;
+        }
+
+        .pulse-marker {
+            width: 24px;
+            height: 24px;
+            background: #4285F4;
+            border: 3px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 15px rgba(66, 133, 244, 0.6);
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pulse-marker::after {
+            content: '';
+            position: absolute;
+            inset: -8px;
+            border-radius: 50%;
+            background: rgba(66, 133, 244, 0.3);
+            animation: pulse 2s infinite;
+        }
+
+        .direction-cone {
+            position: absolute;
+            width: 0;
+            height: 0;
+            border-left: 15px solid transparent;
+            border-right: 15px solid transparent;
+            border-bottom: 40px solid rgba(66, 133, 244, 0.4);
+            top: -45px;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: none;
+            transition: transform 0.1s ease-out;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 0.8; }
+            100% { transform: scale(2.4); opacity: 0; }
+        }
+
+        .map-error-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 500;
+            text-align: center;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <!-- Search Bar -->
+    <div class="fixed top-4 left-4 right-4 z-[1000] flex items-center gap-2">
+        <div class="glass-panel flex-1 flex items-center px-4 py-3">
+            <i data-lucide="search" class="w-5 h-5 text-gray-400"></i>
+            <input type="text" placeholder="Find aisles, milk, bread..." class="bg-transparent border-none focus:ring-0 ml-3 flex-1 text-sm outline-none" id="searchBox">
+            <button class="p-1 rounded-full hover:bg-gray-100 text-blue-500">
+                <i data-lucide="mic" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <button class="glass-panel p-3 text-gray-700 active:scale-95 transition-transform" onclick="toggleDebug()">
+            <i data-lucide="info" class="w-6 h-6"></i>
+        </button>
+    </div>
+
+    <div id="map">
+        <div id="map-error" class="map-error-overlay hidden">
+            <div class="bg-white/90 p-6 rounded-2xl shadow-xl border border-red-100">
+                <i data-lucide="alert-circle" class="w-10 h-10 text-red-500 mx-auto mb-3"></i>
+                <p class="text-sm text-gray-800 font-bold">Image Asset Missing</p>
+                <p class="text-[10px] text-gray-500 mt-1">Check floor_plan_page.jpg availability.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Live Telemetry -->
+    <div id="debugPanel" class="fixed top-20 right-4 z-[1001] glass-panel p-3 text-[10px] font-mono hidden space-y-1">
+        <p class="font-bold border-b mb-1 pb-1 text-blue-600">SENSORS</p>
+        <p>HDG: <span id="db-hdg" class="text-black">0</span>°</p>
+        <p>POS: <span id="db-pos" class="text-black">0,0</span></p>
+        <p>STP: <span id="db-steps" class="text-black">0</span></p>
+        <p>ACC: <span id="db-acc" class="text-black">0.0</span></p>
+    </div>
+
+    <!-- Control Center -->
+    <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[1000] w-[92%] max-w-md">
+        <div class="glass-panel p-4 flex flex-col gap-4">
+            <div class="flex justify-between items-center">
+                <div class="flex items-center gap-3">
+                    <div class="p-2.5 bg-blue-600 rounded-xl shadow-inner">
+                        <i data-lucide="locate-fixed" class="w-5 h-5 text-white"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-gray-900 text-sm">Indoor Guide</h3>
+                        <div class="flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-gray-300" id="status-dot"></span>
+                            <p class="text-[10px] text-gray-500 font-semibold uppercase tracking-wider" id="sensor-text">Sensors Offline</p>
+                        </div>
+                    </div>
+                </div>
+                <button id="recenterBtn" class="p-3 bg-white border border-gray-100 rounded-full text-blue-600 shadow-sm active:bg-blue-50 transition-colors">
+                    <i data-lucide="navigation-2" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <button id="startNavBtn" class="flex-1 bg-blue-600 text-white py-3.5 rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg hover:bg-blue-700 active:scale-[0.98] transition-all">
+                    <i data-lucide="play" class="w-5 h-5 fill-current"></i>
+                    Start Navigation
+                </button>
+                <button class="p-3.5 rounded-2xl bg-gray-100 text-gray-600 active:bg-gray-200" onclick="resetPosition()">
+                    <i data-lucide="rotate-ccw" class="w-5 h-5"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Permissions Modal -->
+    <div id="permissionModal" class="fixed inset-0 bg-black/70 z-[2000] flex items-center justify-center p-6 hidden">
+        <div class="bg-white rounded-[2rem] p-8 max-w-sm w-full text-center shadow-2xl">
+            <div class="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-6 text-blue-600">
+                <i data-lucide="motion-cw" class="w-10 h-10 animate-pulse"></i>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-900 mb-3">Sync Sensors</h2>
+            <p class="text-gray-500 mb-8 text-sm leading-relaxed">To move your blue dot on the map, we need to access your phone's <b>compass</b> and <b>motion sensors</b>.</p>
+            <button id="allowSensorsBtn" class="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold text-lg shadow-xl hover:bg-blue-700 active:scale-95 transition-all">
+                Allow Access
+            </button>
+            <button class="mt-4 text-gray-400 text-xs font-medium" onclick="document.getElementById('permissionModal').classList.add('hidden')">Later</button>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // --- Setup ---
+        const IMAGE_URL = 'floor_plan_page.jpg'; 
+        // Aspect ratio for the store plan (width/height roughly 4:3 based on preview)
+        const IMAGE_BOUNDS = [[0, 0], [750, 1000]]; 
+        let currentPos = [375, 500]; // Start in middle
+        let currentHeading = 0; 
+        let stepCount = 0;
+        let isNavigating = false;
+        let lastStepTime = 0;
+        let stepSensitivity = 14.0; // Higher = less sensitive to accidental shakes
+
+        // --- Map Initialization ---
+        const map = L.map('map', {
+            crs: L.CRS.Simple,
+            minZoom: -1,
+            maxZoom: 3,
+            zoomControl: false,
+            attributionControl: false
+        });
+
+        const floorPlanOverlay = L.imageOverlay(IMAGE_URL, IMAGE_BOUNDS);
+        floorPlanOverlay.addTo(map);
+        
+        floorPlanOverlay.on('error', () => {
+            document.getElementById('map-error').classList.remove('hidden');
+        });
+
+        map.fitBounds(IMAGE_BOUNDS);
+
+        // --- Marker Setup ---
+        const userIcon = L.divIcon({
+            className: 'custom-div-icon',
+            html: `
+                <div class="pulse-marker" id="userMarker">
+                    <div class="direction-cone" id="userArrow"></div>
+                </div>
+            `,
+            iconSize: [24, 24],
+            iconAnchor: [12, 12]
+        });
+
+        const userMarker = L.marker(currentPos, { icon: userIcon }).addTo(map);
+
+        // --- Business Logic ---
+
+        function updateMarker() {
+            userMarker.setLatLng(currentPos);
+            const arrow = document.getElementById('userArrow');
+            if (arrow) {
+                arrow.style.transform = `translateX(-50%) rotate(${currentHeading}deg)`;
+            }
+            
+            // UI Feedback
+            document.getElementById('db-hdg').innerText = Math.round(currentHeading);
+            document.getElementById('db-pos').innerText = `${Math.round(currentPos[0])},${Math.round(currentPos[1])}`;
+            document.getElementById('db-steps').innerText = stepCount;
+        }
+
+        function recenter() {
+            map.panTo(currentPos, { animate: true });
+        }
+
+        function resetPosition() {
+            currentPos = [375, 500];
+            stepCount = 0;
+            updateMarker();
+            recenter();
+        }
+
+        // --- Sensor Processing ---
+
+        function handleMotion(event) {
+            if (!isNavigating) return;
+            const acc = event.accelerationIncludingGravity;
+            if (!acc) return;
+            
+            const mag = Math.sqrt(acc.x**2 + acc.y**2 + acc.z**2);
+            document.getElementById('db-acc').innerText = mag.toFixed(1);
+
+            const now = Date.now();
+            if (mag > stepSensitivity && now - lastStepTime > 450) {
+                lastStepTime = now;
+                stepCount++;
+                
+                // Dead Reckoning Step (15px move in the direction of device heading)
+                const stepSize = 15; 
+                const rad = (currentHeading) * (Math.PI / 180);
+                
+                // In L.CRS.Simple, y increases downwards, x increases rightwards
+                // We map heading 0 (North) to negative Y movement
+                currentPos[0] += stepSize * Math.cos(rad - Math.PI/2); 
+                currentPos[1] += stepSize * Math.sin(rad - Math.PI/2);
+                
+                // Safety bounds
+                currentPos[0] = Math.max(0, Math.min(750, currentPos[0]));
+                currentPos[1] = Math.max(0, Math.min(1000, currentPos[1]));
+
+                updateMarker();
+            }
+        }
+
+        function handleOrientation(event) {
+            if (!isNavigating) return;
+            // Support for both Android and iOS
+            let heading = event.webkitCompassHeading || (360 - event.alpha);
+            if (heading !== undefined) {
+                currentHeading = heading;
+                updateMarker();
+            }
+        }
+
+        // --- Controls & Permissions ---
+
+        const modal = document.getElementById('permissionModal');
+        const startBtn = document.getElementById('startNavBtn');
+        const statusText = document.getElementById('sensor-text');
+        const statusDot = document.getElementById('status-dot');
+
+        async function initSensorAccess() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try {
+                    const orientRes = await DeviceOrientationEvent.requestPermission();
+                    const motionRes = await DeviceMotionEvent.requestPermission();
+                    if (orientRes === 'granted' && motionRes === 'granted') {
+                        startTracking();
+                    }
+                } catch (e) {
+                    statusText.innerText = "Permission Blocked";
+                    statusDot.className = "w-2 h-2 rounded-full bg-red-500";
+                }
+            } else {
+                startTracking();
+            }
+        }
+
+        function startTracking() {
+            window.addEventListener('deviceorientation', handleOrientation, true);
+            window.addEventListener('devicemotion', handleMotion, true);
+            
+            isNavigating = true;
+            modal.classList.add('hidden');
+            startBtn.innerHTML = `<i data-lucide="square" class="w-5 h-5 fill-current"></i> Stop Tracking`;
+            startBtn.className = startBtn.className.replace('bg-blue-600', 'bg-red-500');
+            statusText.innerText = "Positioning Live";
+            statusDot.className = "w-2 h-2 rounded-full bg-green-500";
+            lucide.createIcons();
+        }
+
+        function stopTracking() {
+            isNavigating = false;
+            startBtn.innerHTML = `<i data-lucide="play" class="w-5 h-5 fill-current"></i> Start Navigation`;
+            startBtn.className = startBtn.className.replace('bg-red-500', 'bg-blue-600');
+            statusText.innerText = "Tracking Paused";
+            statusDot.className = "w-2 h-2 rounded-full bg-yellow-500";
+            lucide.createIcons();
+        }
+
+        startBtn.addEventListener('click', () => {
+            if (isNavigating) stopTracking();
+            else modal.classList.remove('hidden');
+        });
+
+        document.getElementById('allowSensorsBtn').addEventListener('click', initSensorAccess);
+        document.getElementById('recenterBtn').addEventListener('click', recenter);
+
+        function toggleDebug() {
+            document.getElementById('debugPanel').classList.toggle('hidden');
+        }
+
+        // Touch to reposition: Helps user align with reality
+        map.on('contextmenu', (e) => {
+            currentPos = [e.latlng.lat, e.latlng.lng];
+            updateMarker();
+        });
+
+        lucide.createIcons();
+        updateMarker();
+    </script>
+</body>
+</html>
