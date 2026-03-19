@@ -112,6 +112,7 @@
         <p>POS: <span id="db-pos" class="text-black">0,0</span></p>
         <p>STP: <span id="db-steps" class="text-black">0</span></p>
         <p>ACC: <span id="db-acc" class="text-black">0.0</span></p>
+        <button onclick="simulateStep()" class="mt-2 w-full bg-blue-100 text-blue-800 rounded py-1.5 font-bold active:bg-blue-200">Test Step</button>
     </div>
 
     <!-- Control Center -->
@@ -130,7 +131,7 @@
                         </div>
                     </div>
                 </div>
-                <button id="recenterBtn" class="p-3 bg-white border border-gray-100 rounded-full text-blue-600 shadow-sm active:bg-blue-50 transition-colors">
+                <button id="recenterBtn" class="p-3 bg-white border border-gray-100 rounded-full text-gray-400 shadow-sm transition-colors">
                     <i data-lucide="navigation-2" class="w-5 h-5"></i>
                 </button>
             </div>
@@ -172,14 +173,15 @@
         let currentHeading = 0; 
         let stepCount = 0;
         let isNavigating = false;
+        let isFollowing = false;
         let lastStepTime = 0;
-        let stepSensitivity = 14.0; // Higher = less sensitive to accidental shakes
+        let stepSensitivity = 11.5; // Lowered for easier walking detection
 
         // --- Map Initialization ---
         const map = L.map('map', {
             crs: L.CRS.Simple,
             minZoom: -1,
-            maxZoom: 3,
+            maxZoom: 5, // Increased max zoom so we can see aisles closely
             zoomControl: false,
             attributionControl: false
         });
@@ -223,8 +225,23 @@
         }
 
         function recenter() {
-            map.panTo(currentPos, { animate: true });
+            isFollowing = true;
+            // Zoom in closer if not already zoomed
+            map.setView(currentPos, Math.max(map.getZoom(), 3), { animate: true });
+            
+            // Update button visual state to "Following"
+            const btn = document.getElementById('recenterBtn');
+            btn.classList.add('text-blue-600', 'bg-blue-50', 'border-blue-200');
+            btn.classList.remove('text-gray-400', 'bg-white', 'border-gray-100');
         }
+
+        // Stop auto-following if the user manually drags the map
+        map.on('dragstart', () => {
+            isFollowing = false;
+            const btn = document.getElementById('recenterBtn');
+            btn.classList.remove('text-blue-600', 'bg-blue-50', 'border-blue-200');
+            btn.classList.add('text-gray-400', 'bg-white', 'border-gray-100');
+        });
 
         function resetPosition() {
             currentPos = [375, 500];
@@ -234,6 +251,37 @@
         }
 
         // --- Sensor Processing ---
+        
+        // Manual test button logic
+        function simulateStep() {
+            if (!isNavigating) return;
+            triggerStep();
+        }
+
+        function triggerStep() {
+            stepCount++;
+            
+            // Smaller visual steps for smoother zoomed-in navigation
+            const stepSize = 8; 
+            const rad = currentHeading * (Math.PI / 180);
+            
+            // Leaflet CRS.Simple: Index 0 is Y (Up/Down), Index 1 is X (Left/Right)
+            // Math.cos(rad) moves UP when heading is 0 (North)
+            // Math.sin(rad) moves RIGHT when heading is 90 (East)
+            currentPos[0] += stepSize * Math.cos(rad); 
+            currentPos[1] += stepSize * Math.sin(rad);
+            
+            // Safety bounds
+            currentPos[0] = Math.max(0, Math.min(750, currentPos[0]));
+            currentPos[1] = Math.max(0, Math.min(1000, currentPos[1]));
+
+            updateMarker();
+            
+            // Auto-pan camera if follow mode is active
+            if (isFollowing) {
+                map.panTo(currentPos, { animate: true, duration: 0.25 });
+            }
+        }
 
         function handleMotion(event) {
             if (!isNavigating) return;
@@ -246,22 +294,7 @@
             const now = Date.now();
             if (mag > stepSensitivity && now - lastStepTime > 450) {
                 lastStepTime = now;
-                stepCount++;
-                
-                // Dead Reckoning Step (15px move in the direction of device heading)
-                const stepSize = 15; 
-                const rad = (currentHeading) * (Math.PI / 180);
-                
-                // In L.CRS.Simple, y increases downwards, x increases rightwards
-                // We map heading 0 (North) to negative Y movement
-                currentPos[0] += stepSize * Math.cos(rad - Math.PI/2); 
-                currentPos[1] += stepSize * Math.sin(rad - Math.PI/2);
-                
-                // Safety bounds
-                currentPos[0] = Math.max(0, Math.min(750, currentPos[0]));
-                currentPos[1] = Math.max(0, Math.min(1000, currentPos[1]));
-
-                updateMarker();
+                triggerStep();
             }
         }
 
@@ -310,6 +343,9 @@
             statusText.innerText = "Positioning Live";
             statusDot.className = "w-2 h-2 rounded-full bg-green-500";
             lucide.createIcons();
+            
+            // Automatically zoom into aisles and follow user
+            recenter();
         }
 
         function stopTracking() {
